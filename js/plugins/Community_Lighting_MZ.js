@@ -8,12 +8,12 @@ var Community = Community || {};
 Community.Lighting = Community.Lighting || {};
 Community.Lighting.name = "Community_Lighting_MZ";
 Community.Lighting.parameters = PluginManager.parameters(Community.Lighting.name);
-Community.Lighting.version = 4.3;
+Community.Lighting.version = 4.6;
 var Imported = Imported || {};
 Imported[Community.Lighting.name] = true;
 /*:
 * @target MZ
-* @plugindesc v4.3 Creates an extra layer that darkens a map and adds lightsources! Released under the MIT license!
+* @plugindesc v4.6 Creates an extra layer that darkens a map and adds lightsources! Released under the MIT license!
 * @author Terrax, iVillain, Aesica, Eliaquim, Alexandre, Nekohime1989
 7
 * @param ---General Settings---
@@ -36,9 +36,15 @@ Imported[Community.Lighting.name] = true;
 * @type boolean
 * @default false
 *
+* @param Daynight Cycle
+* @parent ---General Settings---
+* @desc Should the brightness change over time
+* @type boolean
+* @default true
+*
 * @param Reset Lights
 * @parent ---General Settings---
-* @desc Resets the light switches on map change
+* @desc Resets the conditional lights on map change
 * @type boolean
 * @default false
 *
@@ -66,6 +72,14 @@ Imported[Community.Lighting.name] = true;
 *
 * @param ---DayNight Settings---
 * @default
+*
+* @param Daynight Initial Speed
+* @parent ---DayNight Settings---
+* @desc What is the initial speed of the DayNight cycle?
+* @type number
+* @min 0
+* @default 10
+*
 *
 * @param Save DaynightHours
 * @parent ---DayNight Settings---
@@ -95,6 +109,13 @@ Imported[Community.Lighting.name] = true;
 * @min 0
 * @default 0
 *
+* @param No Autoshadow During Night
+* @parent ---DayNight Settings---
+* @desc Hide autoshadow during night?
+* @type number
+* @type boolean
+* @default false
+*
 * @param Night Hours
 * @parent ---DayNight Settings---
 * @desc Comma-separated list of night hours.  Not used/relevant if Save Night Switch set to 0.
@@ -106,8 +127,21 @@ Imported[Community.Lighting.name] = true;
 * @default ["#6666ff","#6666ff","#6666ff","#6666ff","#6666ff","#6666ff","#9999ff","#ccccff","#ffffff","#ffffff","#ffffff","#ffffff","#ffffff","#ffffff","#ffffff","#ffffff","#ffffff","#ffffff","#ffcc88","#9999ff","#6666ff","#6666ff","#6666ff","#6666ff"]
 * @type text[]
 *
+* @param Daynight Initial Hour
+* @parent ---DayNight Settings---
+* @desc What is the initial hour?
+* @type number
+* @min 0
+* @default 0
+*
 * @param ---Offset and Sizes---
 * @default
+*
+* @param Lights Active Radius
+* @parent ---Offset and Sizes---
+* @desc The number of grid spaces away from the player that lights are turned on. (0 to not use this functionality)
+* Default: 0
+* @default 0
 *
 * @param Player radius
 * @parent ---Offset and Sizes---
@@ -120,6 +154,15 @@ Imported[Community.Lighting.name] = true;
 * @param Flashlight offset
 * @parent ---Offset and Sizes---
 * @desc Increase this setting to move up the flashlight for double height characters.
+* Default: 0
+* @type number
+* @min -100
+* @max 100
+* @default 0
+*
+* @param Flashlight X offset
+* @parent ---Offset and Sizes---
+* @desc Use this setting for characters larger than one space.
 * Default: 0
 * @type number
 * @min -100
@@ -763,6 +806,18 @@ Imported[Community.Lighting.name] = true;
 * - The second argument is speed of the fade (1 very fast, 20 more slow)
 * - Still automatically set too dark color to '#666666' (dark gray).
 *
+* --------------------------------------------------------------------------
+* Lights Active Radius
+* --------------------------------------------------------------------------
+* This allows you to decide how far away from the player lights are active,
+* anything beyond this range will not light up until the player gets
+* closer to it.
+* 
+* It can be changed in the plugin parameters, or using the script call...
+*
+* $gameVariables.SetActiveRadius(#)
+*
+* ....where # is the max distance you want in tiles.
 */
 
 (function ($$) {
@@ -808,6 +863,9 @@ Imported[Community.Lighting.name] = true;
 	let dayNightSaveMinutes = Number(parameters['Save DaynightMinutes']) || 0;
 	let dayNightSaveSeconds = Number(parameters['Save DaynightSeconds']) || 0;
 	let dayNightSaveNight = Number(parameters["Save Night Switch"]) || 0;
+	let dayNightNoAutoshadow = eval(parameters["No Autoshadow During Night"]) || false;
+	let hideAutoShadow = false;
+	let brightnessOverTime = eval(parameters['Daynight Cycle']) || true;
 	let dayNightList = (function(dayNight, nightHours)
 	{
 		let result = [];
@@ -824,7 +882,8 @@ Imported[Community.Lighting.name] = true;
 		}
 		return result;
 	})(parameters["DayNight Colors"], parameters["Night Hours"]);
-	let flashlightoffset = Number(parameters['Flashlight offset']) || 0;
+	let flashlightYoffset = Number(parameters['Flashlight offset']) || 0;
+	let flashlightXoffset = Number(parameters['Flashlight X offset']) || 0;
 	let killswitch = parameters['Kill Switch'] || 'None';
 	if (killswitch !== 'A' && killswitch !== 'B' && killswitch !== 'C' && killswitch !== 'D') {
 		killswitch = 'None'; //Set any invalid value to no switch
@@ -913,6 +972,13 @@ Imported[Community.Lighting.name] = true;
 		if (dayNightSaveMinutes > 0) $gameVariables.setValue(dayNightSaveMinutes, mm);
 		if (dayNightSaveSeconds > 0 && ss !== null) $gameVariables.setValue(dayNightSaveSeconds, ss);
 		if (dayNightSaveNight > 0 && dayNightList[hh] instanceof Object) $gameSwitches.setValue(dayNightSaveNight, dayNightList[hh].isNight);
+		if (dayNightNoAutoshadow && dayNightList[hh] instanceof Object && dayNightList[hh].isNight !== hideAutoShadow) {
+			hideAutoShadow = dayNightList[hh].isNight; // We can not use $$.isNight because DaynightCycle hasn't been updated yet!
+			// Update the shadow manually
+			if (SceneManager._scene && SceneManager._scene._spriteset && SceneManager._scene._spriteset._tilemap) {
+				SceneManager._scene._spriteset._tilemap.refresh();
+			}
+		}
 	};
 	$$.isNight = function()
 	{
@@ -1708,7 +1774,8 @@ Imported[Community.Lighting.name] = true;
 			if (playerflashlight == true) {
 				this._maskBitmap.radialgradientFillRect2(x1, y1, lightMaskPadding, iplayer_radius, playercolor, '#000000', pd, flashlightlength, flashlightwidth);
 			}
-			y1 = y1 - flashlightoffset;
+			x1 = x1 - flashlightXoffset;
+			y1 = y1 - flashlightYoffset;
 			if (iplayer_radius < 100) {
 				// dim the light a bit at lower lightradius for a less focused effect.
 				let r = $$.hexToRgb(playercolor).r;
@@ -1740,7 +1807,7 @@ Imported[Community.Lighting.name] = true;
 
 		let daynightspeed = $gameVariables.GetDaynightSpeed();
 
-		if (daynightspeed > 0 && daynightspeed < 5000) {
+		if (daynightspeed > 0 && daynightspeed < 5000 && brightnessOverTime) {
 
 			let datenow = new Date();
 			let seconds = Math.floor(datenow.getTime() / 10);
@@ -1774,6 +1841,15 @@ Imported[Community.Lighting.name] = true;
 			let evid = event_id[i];
 			let cur = $gameMap.events()[eventObjId[i]];
 			if (cur._lastLightPage !== cur._pageIndex) cur.resetLightData();
+			
+			let lightsOnRadius = $gameVariables.GetActiveRadius();
+		    if (lightsOnRadius > 0) {
+				let distanceApart = Math.round(Community.Lighting.distance($gamePlayer.x, $gamePlayer.y, cur._realX, cur._realY));
+				if (distanceApart > lightsOnRadius) {
+					continue;
+				}
+			}
+			
 			let lightType = cur.getLightType();
 			if (lightType === "light" || lightType === "fire" || lightType === "flashlight")
 			{
@@ -2744,7 +2820,8 @@ Imported[Community.Lighting.name] = true;
 
 		// smal dim glove around player
 		context.save();
-		y1 = y1 - flashlightoffset;
+		x1 = x1 - flashlightXoffset;
+		y1 = y1 - flashlightYoffset;
 
 		r1 = 1;
 		r2 = 40;
@@ -2831,9 +2908,9 @@ Imported[Community.Lighting.name] = true;
 		}
 	};
 
-	let Community_Lighting_Spriteset_Battle_createBattleback = Spriteset_Battle.prototype.createBattleback;
-	Spriteset_Battle.prototype.createBattleback = function() {
-		Community_Lighting_Spriteset_Battle_createBattleback.call(this);
+	let Community_Lighting_Spriteset_Battle_createBattleField = Spriteset_Battle.prototype.createBattleField;
+	Spriteset_Battle.prototype.createBattleField = function() {
+		Community_Lighting_Spriteset_Battle_createBattleField.call(this);
 		if (battleMaskPosition === 'Between') {
 			this.createBattleLightmask();
 		}
@@ -2846,7 +2923,7 @@ Imported[Community.Lighting.name] = true;
 				if (battleMaskPosition === 'Above') {
 					this.addChild(this._battleLightmask);
 				} else if (battleMaskPosition === 'Between') {
-					this._back2Sprite.addChild(this._battleLightmask);
+					this._battleField.addChild(this._battleLightmask);
 				}
 			}
 		}
@@ -2867,15 +2944,7 @@ Imported[Community.Lighting.name] = true;
 	    this._createBitmap();
 
 		//Initialize the bitmap
-		
-		// Battlebacks are shifted 32 pixels left (to be able to support screen shakes).
-		// We must take this into account if the BattleLightmask is linked to the battlebacks.
-		var battlebackOffset = battleMaskPosition === 'Between' ? 32 : 0;
-		if (Imported.YEP_ImprovedBattlebacks) { // ImprovedBattlebacks don't have any Y shift
-			this._addSprite(-lightMaskPadding + battlebackOffset, 0, this._maskBitmap);
-		} else {
-			this._addSprite(-lightMaskPadding + battlebackOffset, 0 + battlebackOffset, this._maskBitmap);
-		}
+		this._addSprite(-lightMaskPadding, 24, this._maskBitmap); // The +24 is to offset the 24 pixels shift of Spriteset_Battle.prototype.battleFieldOffsetY
 
 		var redhex = $$._MapTint.substring(1, 3);
 		var greenhex = $$._MapTint.substring(3, 5);
@@ -3052,7 +3121,7 @@ Imported[Community.Lighting.name] = true;
 
 		for (let i = 0; i < event_eventcount; i++) {
 			if ($gameMap.events()[i]) {
-				if ($gameMap.events()[i].event()) {
+				if ($gameMap.events()[i].event() && !$gameMap.events()[i]._erased) {
 					let note = $gameMap.events()[i].getCLTag();
 
 					let note_args = note.split(" ");
@@ -3197,7 +3266,27 @@ Imported[Community.Lighting.name] = true;
 		$gameVariables.SetLightTags(tile_lights);
 		$gameVariables.SetBlockTags(tile_blocks);
 	};
+	
+	let _Tilemap_addShadow = Tilemap.prototype._addShadow;
+	Tilemap.prototype._addShadow = function (layer, shadowBits, dx, dy) {
+		if (!hideAutoShadow) {
+		  _Tilemap_addShadow.call(this, layer, shadowBits, dx, dy);
+		}
+		// Else, show no shadow
+	};
 })(Community.Lighting);
+
+Community.Lighting.distance = function (x1, y1, x2, y2) {
+  return Math.abs(Math.sqrt(Math.pow(x1 - x2, 2) + Math.pow(y1 - y2, 2)));
+};
+
+Game_Variables.prototype.SetActiveRadius = function (value) {
+  this._Player_Light_Radius = value;
+};
+Game_Variables.prototype.GetActiveRadius = function () {
+	if (this._Player_Light_Radius >= 0) return this._Player_Light_Radius;
+	return Number(Community.Lighting.parameters['Lights Active Radius']) || 0;
+};
 
 Game_Variables.prototype.GetFirstRun = function () {
 	if (typeof this._Community_Lighting_FirstRun == 'undefined') {
@@ -3336,13 +3425,15 @@ Game_Variables.prototype.SetDaynightSpeed = function (value) {
 	this._Community_Lighting_DaynightSpeed = value;
 };
 Game_Variables.prototype.GetDaynightSpeed = function () {
-	return this._Community_Lighting_DaynightSpeed || 10;
+	if (this._Community_Lighting_DaynightSpeed >= 0) return this._Community_Lighting_DaynightSpeed;
+	return Number(Community.Lighting.parameters['Daynight Initial Speed']) || 10;
 };
 Game_Variables.prototype.SetDaynightCycle = function (value) {
 	this._Community_Lighting_DaynightCycle = value;
 };
 Game_Variables.prototype.GetDaynightCycle = function () {
-	return this._Community_Lighting_DaynightCycle || 0;
+	if (this._Community_Lighting_DaynightCycle !== undefined) return this._Community_Lighting_DaynightCycle;
+	return Number(Community.Lighting.parameters['Daynight Initial Hour']) || 0;
 };
 Game_Variables.prototype.SetDaynightTimer = function (value) {
 	this._Community_Lighting_DaynightTimer = value;
